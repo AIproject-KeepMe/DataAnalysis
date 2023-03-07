@@ -11,6 +11,10 @@ from faker import Faker
 import asyncio
 import requests
 
+import numpy as np
+import pickle
+from sklearn.preprocessing import MinMaxScaler
+
 # MySQL 데이터베이스 설정
 mysql_host = 'database-1.cani4y1t2hfg.ap-northeast-2.rds.amazonaws.com'
 mysql_user = 'slows14tem'
@@ -141,19 +145,94 @@ async def save_sqs_messages_to_mysql():
                 message_data = json.loads(message['Body'])
 
                 # model 처리
+                
+            # 모델 학습
+            # 모델 로드
+            with open('svm_rbf.pkl', 'rb') as f:
+                model = pickle.load(f)
 
-                # MySQL 데이터베이스에 데이터 삽입
-                if len(message_data) >= 2:
-                    for i in range(len(message_data)):
-                        print('Save data: ', message_data[i])
+            # SQS 데이터에서 acc, gyro데이터만 가져오기
+            acc_data  = np.array([response["accX"],response["accY"], response["accZ"]])
+            gyro_data = np.array([response["gyroX"], response["gyroY"], response["gyroZ"]])
+            
+            worker = response['workerId']
+            start = 0
+            end = len(response['accX'])-1
+            length = len(response['accX'])
 
-                    sql1 = "INSERT INTO gps (userId, lat, lon, recordTime) VALUES (%s, %s, %s, %s)"
-                    val1 = (message_data[0]['userId'], message_data[0]['lat'],
-                            message_data[0]['lon'], message_data[0]['recordTime'])
+            tstart = start
+            tend = start + 128
 
-                    sql2 = 'INSERT INTO vitalsign (userId, insertTime, heartRate, temp, o2, steps) VALUES (%s, %s, %s, %s, %s, %s)'
-                    val2 = (message_data[1]['userId'], message_data[1]['insertTime'],
-                            message_data[1]['heartRate'], message_data[1]['temp'], message_data[1]['o2'], message_data[1]['steps'])
+            xtrain = []
+            temp = []
+            for id in worker:
+                id
+                for i in range(tstart, tend):
+                    temp.append(acc_data[i][0])
+                    temp.append(acc_data[i][1])
+                    temp.append(acc_data[i][2])
+                    temp.append(gyro_data[i][0])
+                    temp.append(gyro_data[i][1])
+                    temp.append(gyro_data[i][2])
+                
+                xtrain.append(temp)
+                tstart = start+1
+                tend = tstart + length
+                if (end < tend) :
+                    break           
+
+            xdata = []  
+            xdata.extend(xtrain)
+
+            xtrain = np.array(xtrain)
+
+            def get_scaler(xdata):
+                row = xdata.shape[0]
+                timestamp = xdata.shape[1]
+                sensor = xdata.shape[2]
+                axis = xdata.shape[3]
+                
+                scaler = MinMaxScaler(feature_range = (-1,1))
+                xdata = xdata.reshape(row,timestamp,sensor*axis)
+                xdata = np.swapaxes(xdata,0,2).reshape(sensor*axis,-1).T
+                scaler.fit(xdata)
+                return scaler
+
+            def scale_data(xdata,scaler):     
+                row = xdata.shape[0]
+                timestamp = xdata.shape[1]
+                sensor = xdata.shape[2]
+                axis = xdata.shape[3]
+                
+                xdata = xdata.reshape(row,timestamp,sensor*axis)
+                xdata = np.swapaxes(xdata,0,2).reshape(sensor*axis,-1).T
+                xdata = scaler.transform(xdata)
+                xdata = xdata.T.reshape(sensor*axis,timestamp,row)
+                xdata = np.swapaxes(xdata,0,2).reshape(row,timestamp,sensor,axis)
+
+            def preprocess_data(xdata):
+                scaler = get_scaler(xdata)
+                xdata = scale_data(xdata,scaler)  
+                return xdata      
+
+            X_new_processed = preprocess_data(xtrain)
+
+            
+            # 모델에 새로운 데이터 넣고 예측
+            y_pred = model.predict(X_new_processed)
+            status = y_pred
+            # MySQL 데이터베이스에 데이터 삽입
+            if len(message_data) >= 2:
+                for i in range(len(message_data)):
+                    print('Save data: ', message_data[i])
+
+                sql1 = "INSERT INTO gps (userId, lat, lon, recordTime) VALUES (%s, %s, %s, %s)"
+                val1 = (message_data[0]['userId'], message_data[0]['lat'],
+                        message_data[0]['lon'], message_data[0]['recordTime'])
+
+                sql2 = 'INSERT INTO vitalsign (userId, insertTime, heartRate, temp, o2, steps) VALUES (%s, %s, %s, %s, %s, %s)'
+                val2 = (message_data[1]['userId'], message_data[1]['insertTime'],
+                        message_data[1]['heartRate'], message_data[1]['temp'], message_data[1]['o2'], message_data[1]['steps'])
 
                 cursor.execute(sql1, val1)
 
